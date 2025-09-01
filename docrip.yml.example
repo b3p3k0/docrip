@@ -1,0 +1,58 @@
+# docrip configuration (v1)
+version: 1
+
+server:
+  # Destination: rsync over SSH (speed-first; no bwlimit)
+  rsync_remote: "backup@datavault.example:/srv/docrip"
+  ssh_key: "/root/.ssh/docrip_ed25519"
+  port: 22
+
+archive:
+  # Compressor: zstd preferred; pigz is fallback
+  compressor: "zstd"          # zstd | pigz
+  compression_level: 3
+  # Chunking: split compressed stream into fixed-sized parts (resumable)
+  chunk_size_mb: 4096         # 0 disables (not recommended)
+  # Spooling: write chunks locally before rsync (resumable & partial recovery)
+  stream_direct: false        # if true, no chunking/spooling, single file over SSH
+  spool_dir: "/var/tmp/docrip"
+  # Metadata
+  preserve_xattrs: true
+
+discovery:
+  # Filesystems to include/skip
+  include_fstypes: ["ext2","ext3","ext4","xfs","btrfs","zfs","ntfs","vfat","exfat","hfs","hfsplus","apfs"]
+  skip_fstypes: ["swap","iso9660","udf","crypto_LUKS"]
+  # Skip encrypted-at-rest (BitLocker/LUKS/FileVault/APFS-encrypted/etc.)
+  skip_if_encrypted: true
+  # Allow read-only assembly of LVM and md-RAID
+  allow_lvm: true
+  allow_raid: true
+  # Skip very small partitions
+  min_partition_size_gb: 256
+  # Devices to avoid entirely (base names, e.g. "sda","nvme0n1")
+  avoid_devices: []
+
+runtime:
+  # 0 = auto (cpu_count//2, clamped 1..8)
+  workers: 0
+  rsync_bwlimit_kbps: 0       # we value speed; keep 0 (no limit)
+  log_level: "INFO"
+
+filters:
+  # Exclude individual files larger than this size (0 disables)
+  max_file_size_mb: 100
+
+naming:
+  # Top-level per-volume directory: YYYYMMDD_<token5>_d<diskno>_p<partno>
+  date_fmt: "%Y%m%d"
+  token_source: "machine-id"  # machine-id | hostname
+  pattern: "{date}_{token}_d{disk}_p{part}"
+
+integrity:
+  algorithm: "sha256"         # per-chunk .sha256 + whole-stream .sha256
+
+output:
+  run_summary_dir: "/var/log/docrip"
+  per_volume_json: true
+

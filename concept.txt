@@ -1,0 +1,340 @@
+Title: docrip – Live-USB data capture, archive (chunked), and sync tool
+
+GOAL
+- From a Linux live-boot USB, automatically:
+  1) Enumerate attached physical disks and partitions (including LVM and md-RAID in read-only mode)
+  2) Identify filesystem types
+  3) Mount supported filesystems READ-ONLY (skip encrypted-at-rest)
+  4) Create compressed archives of each mounted volume
+  5) Split archives into fixed-size chunks, then rsync chunks to a remote server
+- Single-file config; zero interactive prompts; unattended and fast.
+
+PRIMARY LANGUAGE
+- Python 3.x preferred (single entrypoint + small modules).
+- Shell helpers allowed where simpler (e.g., piping tar|zstd|split).
+
+NON-GOALS
+- No decryption of BitLocker/APFS-encrypted/LUKS/VeraCrypt volumes.
+- No repairs/journal replays.
+- No features beyond scope.
+
+---------------------------------------------------------------------------------------------------
+RUNTIME ENVIRONMENT
+- Target: modern Ubuntu/Debian live ISO; root privileges expected.
+- Prefer kernel drivers; fall back to FUSE/tools when needed.
+- Required utilities (skip-with-log if missing):
+  Core: lsblk, blkid, mount, umount, findmnt, tar, ssh, rsync, split, sha256sum
+  Compression: zstd (preferred) or pigz
+  FS helpers:
+    ext2/3/4: mount
+    xfs: mount.xfs
+    btrfs: mount.btrfs
+    ntfs: ntfs-3g
+    vfat/exfat: mount -t vfat/exfat (or mount.exfat)
+    hfs/hfsplus: mount -t hfs/hfsplus (hfsprogs)
+    apfs (RO): apfs-fuse (optional)
+    zfs (optional): zpool, zfs
+  Storage layers (read-only intent):
+    mdadm, lvm2
+  Optional: partprobe, pv, ionice, nice
+
+---------------------------------------------------------------------------------------------------
+CONFIGURATION (single file; YAML recommended; default /etc/docrip.yml)
+# NOTE: Defaults match your answers. All sizes are integers; units as noted.
+version: 1
+
+server:
+  rsync_remote: "backup@datavault.example:/srv/docrip"    # user@host:/path
+  ssh_key: "/root/.ssh/docrip_ed25519"
+  port: 22
+
+archive:
+  compressor: "zstd"            # zstd | pigz
+  compression_level: 3
+  chunk_size_mb: 4096           # write .part files of this size; 0 = disable chunking (not recommended)
+  stream_direct: false          # false = spool chunks locally, then rsync; true = stream (no resume)
+  spool_dir: "/var/tmp/docrip"  # where chunks land before rsync
+  preserve_xattrs: true
+
+discovery:
+  include_fstypes: ["ext2","ext3","ext4","xfs","btrfs","zfs","ntfs","vfat","exfat","hfs","hfsplus","apfs"]
+  skip_fstypes: ["swap","iso9660","udf","crypto_LUKS"]
+  skip_if_encrypted: true
+  allow_lvm: true               # assemble VGs/LVs for read-only mounting
+  allow_raid: true              # assemble md arrays for read-only
+  min_partition_size_gb: 256    # skip partitions smaller than this
+  avoid_devices: []             # e.g., ["sda","nvme0n1"] (base disk names)
+
+runtime:
+  # Adaptive defaults: workers will be computed if 0 (see PERFORMANCE)
+  workers: 0
+  rsync_bwlimit_kbps: 0         # 0 = unlimited (we value speed)
+  log_level: "INFO"
+
+filters:
+  # Exclude individual files above this size from the archive (0 disables)
+  max_file_size_mb: 100
+
+naming:
+  # Top directory per volume: YYYYMMDD_<stableRandom5>_d<diskno>_p<partno>
+  date_fmt: "%Y%m%d"
+  token_source: "machine-id"    # "machine-id" | "hostname" (fallback order applied)
+  pattern: "{date}_{token}_d{disk}_p{part}"
+
+integrity:
+  algorithm: "sha256"           # produce .sha256 for each chunk and whole-stream (manifest)
+
+output:
+  # One JSON per run + per-volume JSONs
+  run_summary_dir: "/var/log/docrip"
+  per_volume_json: true
+
+---------------------------------------------------------------------------------------------------
+FILESYSTEM & LAYER HANDLING
+Encryption detection → always skip if true:
+  - blkid TYPE="crypto_LUKS" or label contains "BitLocker"/"FVE-FS" (BitLocker)
+  - apfs-fuse reports encrypted=true (APFS)
+  - CoreStorage/FileVault or TrueCrypt/VeraCrypt signatures (when detectable)
+  - dm-crypt-mapped devices without keys
+
+md-RAID (read-only assembly):
+  - mdadm --assemble --scan --readonly
+  - Do not create arrays; only assemble known metadata; skip on failure.
+
+LVM (read-only intent):
+  - vgchange -ay          # activate VGs
+  - Prefer mounting LVs with -o ro; optionally enforce RO: lvchange --permission r -ay <LV>
+  - Never write to LVs; no lvresize/lvcreate/etc.
+
+ZFS (optional; RO import):
+  - zpool import -a -o readonly=on -N -f
+  - zfs mount -a -o ro (only if safe; otherwise skip and log)
+  - If ZFS tools absent, skip with notice.
+
+APFS (optional; RO only):
+  - apfs-fuse --readonly <dev> <mp>
+  - If encrypted or apfs-fuse missing → skip with reason.
+
+---------------------------------------------------------------------------------------------------
+MOUNT RECIPES (READ-ONLY)
+ext2/3/4:  mount -t ext4  -o ro,noload,nodev,nosuid,noexec <dev> <mp>
+xfs:       mount -t xfs   -o ro,norecovery,nodev,nosuid,noexec <dev> <mp>
+btrfs:     mount -t btrfs -o ro,nodev,nosuid,noexec <dev> <mp>
+ntfs:      ntfs-3g        -o ro,nodev,nosuid,noexec <dev> <mp>
+vfat:      mount -t vfat  -o ro,uid=0,gid=0,umask=022,nodev,nosuid,noexec <dev> <mp>
+exfat:     mount -t exfat -o ro,nodev,nosuid,noexec <dev> <mp>
+hfs:       mount -t hfs   -o ro,nodev,nosuid,noexec <dev> <mp>
+hfsplus:   mount -t hfsplus -o ro,force,nodev,nosuid,noexec <dev> <mp>
+apfs:      apfs-fuse --readonly <dev> <mp>
+zfs:       see “ZFS” above
+
+---------------------------------------------------------------------------------------------------
+ARCHIVE, CHUNKING & SYNC (resumable by parts)
+We archive each mounted volume into a compressed byte stream, split into fixed-size parts, then rsync parts.
+
+File selection (exclude large individual files; preserve dirs/links):
+  FIND0 = find <mp> -xdev \( -type d -print0 -o -type l -print0 -o -type f -size -${max_file_size_mb}M -print0 \)
+  TAR_BASE = tar --numeric-owner --acls --xattrs --xattrs-include='*' --null -T - --no-recursion \
+             --hard-dereference --warning=no-file-ignored --mtime='UTC 1970-01-01' -cpf - \
+             -C <mp> .
+
+Compression:
+  zstd: zstd -T{comp_threads} -{compression_level}
+  pigz: pigz -p {comp_threads} -{compression_level}
+
+Chunking (preferred; avoids monolithic files, enables partial transfer/recovery):
+  name_base = "{date}_{token}_d{disk}_p{part}"
+  stream hashing + chunk split + per-chunk hash:
+    mkdir -p <spool>/<name_base>
+    ( FIND0 | TAR_BASE ) \
+    | tee >(sha256sum | awk '{print $1}' > <spool>/<name_base>/.whole.sha256 ) \
+    | COMPRESS \
+    | split -b {chunk_size_mb}M -d -a 4 - <spool>/<name_base>/{name_base}.tar.{ext}.part
+  After split, generate per-part sha256:
+    for p in <spool>/<name_base>/*.part*; do sha256sum "$p" > "$p.sha256"; done
+  Create manifest describing order:
+    ls -1 <spool>/<name_base>/*.part* | sort | sed 's#^.*/##' > <spool>/<name_base>/.parts
+    echo "{ext=zst|gz, chunk_size_mb, whole_sha256}" > <spool>/<name_base>/.manifest.json
+
+Rsync (resumable):
+  rsync -e "ssh -i <key> -p <port>" --partial --inplace --append-verify --mkpath \
+        <spool>/<name_base>/  <rsync_remote>/{date}/{token}/
+  (Directory hierarchy groups runs by date+token.)
+
+Remote reconstruction (if ever needed; informational only):
+  cd {date}/{token}/
+  cat {name_base}.tar.{ext}.part* > {name_base}.tar.{ext}
+  sha256sum -c .whole.sha256
+
+Note: If stream_direct=true, we skip spooling/chunking and write a single file over SSH:
+  TAR|COMPRESS | ssh ... "cat > <remote>/<name_base>.tar.{ext}"
+  (Not the default; chunking offers better resilience and partial data capture.)
+
+---------------------------------------------------------------------------------------------------
+NAMING CONVENTION (yours, verbatim)
+- Top directory (per volume): YYYYMMDD_<random5>_d<diskno>_p<partno>
+- The 5-char “random” token is stable for the same host on the same date, and different across hosts on the same date.
+  Implementation:
+    - date_str = today in UTC using date_fmt
+    - host_id = /etc/machine-id if readable, else /sys/class/dmi/id/product_uuid, else hostname
+    - token = base36(sha256( date_str + ":" + host_id ))[0:5]
+- Example: 20220901_a6f09_d0_p1
+
+---------------------------------------------------------------------------------------------------
+DISCOVERY & SELECTION
+1) Detect and exclude the live-USB boot device and its partitions:
+   root_src = findmnt -no SOURCE /
+   derive parent disk (e.g., /dev/sda) → exclude both disk & its parts
+2) Assemble storage layers (RO intent):
+   if allow_raid: mdadm --assemble --scan --readonly || log+continue
+   if allow_lvm:  vgchange -ay || log+continue   (and enforce RO on mount)
+3) Enumerate:
+   lsblk -J -o PATH,KNAME,TYPE,SIZE,FSTYPE,FSVER,LABEL,UUID,MOUNTPOINT,RM,RO,MODEL,TRAN
+   Merge blkid -o export to catch TYPE hints (BitLocker/LUKS/APFS/etc.)
+4) Filter:
+   - TYPE in ["part","lvm","disk","raid"] with FSTYPE in include_fstypes
+   - Skip encrypted-at-rest as detected (see above)
+   - Skip devices in avoid_devices
+   - Skip if SIZE < min_partition_size_gb
+5) Build mount plan:
+   - Assign diskno/partno (stable ordering by lsblk tree)
+   - Create mountpoints /mnt/docrip/vol_<idx>
+
+---------------------------------------------------------------------------------------------------
+PERFORMANCE (adaptive; speed-first but safe)
+- Volume concurrency (workers):
+    If cfg.runtime.workers == 0:
+      cpu = os.cpu_count() or 2
+      workers = clamp(1, cpu // 2, 8)   # balanced default across low-end to workstations
+- Compressor threads per job:
+    comp_threads = max(1, (cpu // workers) - 1)
+    zstd -T{comp_threads} or pigz -p {comp_threads}
+- Queue ordering:
+    Process larger volumes first (descending) to reduce tail latency.
+- I/O politeness (optional):
+    wrap heavy steps with ionice -c2 -n0 and/or nice -n 0 (speed-preferred by default).
+
+---------------------------------------------------------------------------------------------------
+ROBUSTNESS & UX
+CLI:
+  docrip --config /etc/docrip.yml [--dry-run] [--list] [--workers N] \
+         [--only DEV[,DEV2]] [--exclude-dev DEV[,DEV2]]
+  --list      : enumerate discovered devices and show reasons for skip/process
+  --dry-run   : print the exact plan and command lines; perform no changes
+  --workers N : override concurrency
+  --only      : restrict to specific devices (by /dev path or UUID)
+  --exclude-dev: add devices to ignore list for this run
+
+Logging & summaries:
+  - /var/log/docrip/docrip.log (rotating)
+  - Per-run summary JSON: /var/log/docrip/run-<timestamp>.json
+  - Per-volume JSON (if enabled): device, fs, uuid, size, mountpoint, archive dir, chunk count,
+    per-chunk names + sizes, whole_sha256, timings, result, skip_reason (if any).
+
+Error handling:
+  - Mount failure → record and continue.
+  - Chunk/rsync failure → retry with exponential backoff (3 attempts); then mark failed and continue.
+  - Network down → fail current volume; others continue. Exit non-zero if any volume failed.
+
+Safety:
+  - ALWAYS mount read-only; never fsck or replay journals.
+  - Use nodev,nosuid,noexec when compatible.
+  - Sanitize all dynamic strings used in shell commands.
+
+---------------------------------------------------------------------------------------------------
+PYTHON MODULE LAYOUT
+- main.py            – CLI, orchestrator, worker pool, signal handling
+- config.py          – load/validate config; defaults; paths; size parsing
+- discover.py        – lsblk/blkid parsing; boot-device exclusion; size threshold; encryption flags
+- layers.py          – mdadm assemble (RO); LVM activate (RO intent); ZFS import (RO) if present
+- mounter.py         – per-FS mount/unmount logic (recipes above)
+- selector.py        – ordering (largest-first), diskno/partno mapping
+- archiver.py        – find-list builder (size excludes), tar/metadata flags, compressor thread calc
+- chunker.py         – stream hashing, split parts, per-part hashes, manifest creation
+- sync.py            – rsync parts/sha/manifests; resume; remote dirs {date}/{token}/
+- logutil.py         – structured logging + JSON summaries
+- util.py            – shell exec wrappers, retry/backoff, base36/hash, time/host helpers
+- tests/             – unit + integration
+
+---------------------------------------------------------------------------------------------------
+KEY PIPELINES (pseudocode)
+
+load_config()
+token = derive_token(cfg.naming.token_source, today_str(cfg.naming.date_fmt))
+boot = detect_boot_device()
+layers.assemble_ro(cfg.discovery)               # mdadm/LVM/ZFS as allowed
+
+candidates = discover_volumes(exclude=[boot.disk, *boot.parts])
+plan = select_supported(candidates, cfg.discovery, size_min_gb, encrypted=skip)
+
+if args.list: print_table(plan); exit
+
+workers = cfg.runtime.workers or clamp(1, cpu_count//2, 8)
+executor = ThreadPoolExecutor(max_workers=workers)
+
+for vol in order_by_size_desc(plan):
+  executor.submit(process_volume, vol, token, cfg)
+
+def process_volume(vol, token, cfg):
+  name_base = templ(cfg.naming.pattern, date=today, token=token,
+                    disk=vol.diskno, part=vol.partno)
+  mp = create_mountpoint(name_base)
+  if not mounter.mount(vol, mp):
+      record_skip(vol, "mount_failed"); return
+  try:
+    # Build file list honoring max_file_size_mb (0 means include all files)
+    file_iter = build_find_stream(mp, cfg.filters.max_file_size_mb)
+    # Archive+compress → chunk → hashes → manifest
+    chunk_dir = Path(cfg.archive.spool_dir)/name_base
+    ok = make_chunks(file_iter, mp, chunk_dir, cfg.archive)
+    if ok:
+      sync.rsync_dir(chunk_dir, cfg.server, date=today, token=token,
+                     bwlimit_kbps=cfg.runtime.rsync_bwlimit_kbps)
+      record_success(vol, name_base, chunk_dir)
+    else:
+      record_failure(vol, name_base, "chunking_failed")
+  except Exception as e:
+    record_failure(vol, name_base, str(e))
+  finally:
+    mounter.umount(mp)
+
+---------------------------------------------------------------------------------------------------
+TEST PLAN
+
+Unit tests (no root):
+- Config schema, size parsing, base36 token derivation (date+hostid determinism)
+- lsblk/blkid parsers; encryption heuristics (LUKS/BitLocker/APFS-encrypted fixtures)
+- Selector ordering; diskno/partno mapping
+- Find-list builder correctly excludes >max_file_size_mb but includes dirs/symlinks
+- Manifest and whole-stream hash logic
+
+Integration (root; run in VM):
+- Loopback images for: ext4,xfs,btrfs,ntfs,vfat,exfat,hfs,hfsplus (apfs if tooling present)
+- Create md-RAID1 over loopbacks (readonly assemble) and LVM VG/LVs; ensure RO mounts
+- Populate xattrs/ACLs; run docrip end-to-end → chunk dir with chunks+sha+manifest
+- Rsync to local sshd; simulate interruption and verify resume uploads remaining parts
+- Reassemble chunks with cat; sha256 of whole equals manifest; tar -tf works
+- Verify skips on: encrypted volumes, partitions < min size, boot device
+- Measure throughput across CPUs: workers auto, comp_threads auto
+
+---------------------------------------------------------------------------------------------------
+DOCS
+- README.md: quickstart (live USB), supported FS table, examples
+- CONFIG.md: all options (with your defaults)
+- OPERATIONS.md: dry-run/list usage, failure recovery (resume), remote reassembly notes
+- CHANGELOG.md, LICENSE
+
+---------------------------------------------------------------------------------------------------
+ACCEPTANCE CRITERIA (updated)
+- On a fresh live-USB with config:
+  - `docrip --list` shows devices; marks: processed/skipped (reason: encrypted, too small < 256GB, boot device, etc.)
+  - For at least one supported volume:
+    - RO mount with the correct recipe
+    - Archive stream is chunked into `.partNNNN` under `{date}_{token}_dX_pY/`
+    - Per-chunk `.sha256`, `.parts`, and `.manifest.json` present; `.whole.sha256` computed
+    - Rsync pushes chunk dir to `<remote>/<YYYYMMDD>/<token>/` with resume support
+    - JSON summaries created; run exit code non-zero only if any volume failed
+  - LVM and md-RAID are assembled read-only and handled as above
+  - File > max_file_size_mb are excluded; dirs/links and metadata preserved for included content
+  - Performance adapts: workers auto-calculated if unset; compression threads sized per machine
+
