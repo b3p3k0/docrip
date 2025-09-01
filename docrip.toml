@@ -1,0 +1,44 @@
+version = 1
+
+[server]
+rsync_remote = "backup@datavault.example:/srv/docrip"
+ssh_key = "/root/.ssh/docrip_ed25519"
+port = 22
+
+[archive]
+compressor = "zstd"          # "zstd" | "pigz"
+compression_level = 3
+chunk_size_mb = 4096         # 0 disables chunking (not recommended)
+stream_direct = false        # false = spool+rsync (resumable)
+spool_dir = "/var/tmp/docrip"
+preserve_xattrs = true
+
+[discovery]
+include_fstypes = ["ext2","ext3","ext4","xfs","btrfs","zfs","ntfs","vfat","exfat","hfs","hfsplus","apfs"]
+skip_fstypes = ["swap","iso9660","udf","crypto_LUKS"]
+skip_if_encrypted = true
+allow_lvm = true
+allow_raid = true
+min_partition_size_gb = 256
+avoid_devices = []           # e.g. ["sda","nvme0n1"]
+
+[filters]
+max_file_size_mb = 100       # 0 disables; excludes individual files above this size
+
+[runtime]
+workers = 0                  # 0 = auto (≈ half the CPUs, max 8)
+rsync_bwlimit_kbps = 0       # 0 = unlimited
+log_level = "INFO"
+
+[naming]
+date_fmt = "%Y%m%d"          # UTC
+token_source = "machine-id"  # "machine-id" | "hostname"
+pattern = "{date}_{token}_d{disk}_p{part}"
+
+[integrity]
+algorithm = "sha256"
+
+[output]
+run_summary_dir = "/var/log/docrip"
+per_volume_json = true
+

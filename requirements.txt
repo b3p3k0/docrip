@@ -1,0 +1,10 @@
+# Runtime dependencies (Python 3.11+ required for tomllib)
+# No external runtime dependencies - using only stdlib
+
+# Development dependencies
+pyinstaller>=6.0.0  # For building bundled executable
+pytest>=7.0.0       # Testing framework
+pytest-cov>=4.0.0   # Coverage reporting
+black>=22.0.0       # Code formatting
+flake8>=6.0.0       # Linting
+mypy>=1.0.0         # Type checking

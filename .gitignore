@@ -1,0 +1,76 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Testing
+.tox/
+.nox/
+.coverage
+.pytest_cache/
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Local development
+.DS_Store
+*.log
+
+# Project specific
+docrip.toml.local
+*-dev.toml
+/bin/
+*.key
+*.pem
+/var/tmp/docrip/
+/var/log/docrip/
+
+# Development artifacts
+.claude/
+concept.txt
+*.yml.example
+*.yaml.example
+
+# Backup and temporary files
+*.tmp
+*.bak
+*~
+.#*
+
