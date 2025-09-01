@@ -8,15 +8,15 @@ Storage layers handling (read-only intent):
 """
 
 from __future__ import annotations
-from .util import run, which_or_warn
+from .util import run, which_quiet
 
 
 def assemble_layers(allow_raid: bool, allow_lvm: bool, dry: bool = False) -> None:
-    if allow_raid and which_or_warn("mdadm"):
+    if allow_raid and which_quiet("mdadm"):
         run(["mdadm", "--assemble", "--scan", "--readonly"], dry=dry)
-    if allow_lvm and which_or_warn("vgchange"):
+    if allow_lvm and which_quiet("vgchange"):
         run(["vgchange", "-ay"], dry=dry)
-    if which_or_warn("zpool"):
+    if which_quiet("zpool"):
         run(["zpool", "import", "-a", "-o", "readonly=on", "-N", "-f"], dry=dry)
 
 

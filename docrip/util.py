@@ -40,11 +40,49 @@ def run(cmd, check=True, capture=False, env=None, dry=False):
 
 
 def which_or_warn(name: str) -> bool:
-    """Check if command exists (either in PATH or in the bundled bin/ which is already prepended)."""
-    p = shutil.which(name)
-    if not p:
-        print(f"[warn] missing utility: {name} (not found in PATH)")
-    return bool(p)
+    """Check if command exists - now just delegates to quiet version."""
+    return which_quiet(name)
+
+
+def which_quiet(name: str) -> bool:
+    """Check if command exists silently."""
+    return bool(shutil.which(name))
+
+
+def check_optional_tools() -> None:
+    """Check for optional tools and provide Ubuntu 24.04 installation commands."""
+    tools = {
+        'mdadm': ('RAID array support', 'mdadm'),
+        'vgchange': ('LVM volume support', 'lvm2'), 
+        'zpool': ('ZFS filesystem support', 'zfsutils-linux'),
+        'ntfs-3g': ('NTFS filesystem support', 'ntfs-3g'),
+        'apfs-fuse': ('APFS filesystem support', None)  # Not in standard repos
+    }
+    
+    missing = []
+    apt_packages = []
+    
+    for tool, (desc, package) in tools.items():
+        if not which_quiet(tool):
+            missing.append((tool, desc, package))
+            if package:
+                apt_packages.append(package)
+    
+    if missing:
+        print(f"[info] Optional tools missing - install for full functionality:")
+        for tool, desc, package in missing:
+            if package:
+                print(f"  • {tool} ({desc.lower()}): sudo apt install {package}")
+            else:
+                print(f"  • {tool} ({desc.lower()}): manual installation required")
+        
+        if apt_packages:
+            print(f"")
+            print(f"💡 Install all standard packages: sudo apt install {' '.join(apt_packages)}")
+        
+        # Special handling for apfs-fuse
+        if any(tool == 'apfs-fuse' for tool, _, _ in missing):
+            print(f"💡 For APFS support: see https://github.com/sgan81/apfs-fuse for manual installation")
 
 
 def clamp(lo, x, hi):
@@ -56,7 +94,13 @@ def utc_datestr(fmt):
 
 
 def ensure_dir(p: Path):
-    p.mkdir(parents=True, exist_ok=True)
+    """Create directory with better error reporting."""
+    try:
+        p.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        raise PermissionError(f"Cannot create directory {p} - insufficient permissions")
+    except OSError as e:
+        raise OSError(f"Cannot create directory {p}: {e}")
 
 
 def write_json(path: Path, obj):

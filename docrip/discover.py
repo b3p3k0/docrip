@@ -47,8 +47,11 @@ def lsblk_json() -> Dict[str, Any]:
         capture=True,
     )
     if rc != 0:
-        raise RuntimeError("lsblk failed")
-    return json.loads(out)
+        raise RuntimeError(f"lsblk command failed (rc={rc}). This usually requires root access or proper block device permissions.")
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"lsblk output is not valid JSON: {e}")
 
 
 def blkid_export(dev: str) -> Dict[str, str]:

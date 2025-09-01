@@ -32,9 +32,13 @@ def _load_toml(path: Path) -> Dict[str, Any]:
 def find_config(path_arg: str | None) -> Path:
     """Pick the best config path based on CLI arg and availability."""
     if path_arg:
+        # User explicitly specified a config - it must exist
         p = Path(path_arg)
-        if p.exists():
-            return p
+        if not p.exists():
+            raise FileNotFoundError(f"Specified config file does not exist: {path_arg}")
+        return p
+    
+    # Auto-discovery mode - try default locations
     # prefer adjacent to binary
     p = Path(DEFAULT_CONFIG_PATH)
     if p.exists():

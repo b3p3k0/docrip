@@ -21,6 +21,7 @@ from .util import (
     base36_digest5,
     host_identifier,
     clamp,
+    check_optional_tools,
 )
 from .bundle import DEFAULT_CONFIG_PATH, prepend_bin_to_path
 from .layers import assemble_layers
@@ -117,6 +118,9 @@ def run_plan(
     dry: bool,
 ):
     prepend_bin_to_path()
+    
+    # Check for optional tools once and provide helpful summary
+    check_optional_tools()
 
     # Only create directories if not in dry-run or list-only mode
     if not dry and not list_only:
@@ -125,15 +129,26 @@ def run_plan(
             ensure_dir(cfg.spool_dir)
             ensure_dir(Path("/mnt/docrip"))
         except PermissionError as e:
-            print(f"[warn] Cannot create directories (try running as root): {e}")
-            if not list_only:
-                return 1
+            print(f"❌ Error: {e}")
+            print(f"💡 Hint: This requires root permissions. Try: sudo {' '.join(sys.argv)}")
+            return 1
+        except OSError as e:
+            print(f"❌ Error: {e}")
+            print(f"💡 Hint: Check disk space and filesystem permissions")
+            return 1
 
     date_str = utc_datestr(cfg.date_fmt)
     token = derive_token(cfg, date_str)
 
-    assemble_layers(cfg.allow_raid, cfg.allow_lvm, dry=dry)
-    vols = collect_volumes(cfg)
+    try:
+        assemble_layers(cfg.allow_raid, cfg.allow_lvm, dry=dry)
+        vols = collect_volumes(cfg)
+    except RuntimeError as e:
+        if "lsblk" in str(e):
+            print(f"❌ Error: {e}")
+            print(f"💡 Hint: Try running as root or check if lsblk is installed correctly")
+            return 1
+        raise
 
     # Apply --only
     if only:
@@ -177,11 +192,21 @@ def run_plan(
         "results": [r.__dict__ for r in results],
     }
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    write_json(cfg.run_summary_dir / f"run-{ts}.json", run_summary)
-
-    if cfg.per_volume_json:
-        for r in results:
-            write_json(cfg.run_summary_dir / f"{r.name}.json", r.__dict__)
+    try:
+        write_json(cfg.run_summary_dir / f"run-{ts}.json", run_summary)
+        
+        if cfg.per_volume_json:
+            for r in results:
+                write_json(cfg.run_summary_dir / f"{r.name}.json", r.__dict__)
+                
+    except PermissionError as e:
+        print(f"❌ Error writing log files: {e}")
+        print(f"💡 Hint: Check permissions on {cfg.run_summary_dir} or run as root")
+        return 1
+    except OSError as e:
+        print(f"❌ Error writing log files: {e}")
+        print(f"💡 Hint: Check disk space and directory permissions")
+        return 1
 
     failed = [r for r in results if r.status != "ok"]
     if failed:

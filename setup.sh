@@ -227,6 +227,16 @@ do_version() {
   fi
 }
 
+do_check_tools() {
+  echo "[*] Checking optional tool availability"
+  PYTHON=$(get_python)
+  $PYTHON -c "
+from docrip.util import check_optional_tools
+check_optional_tools()
+print('[info] Run \\'./setup.sh check-tools\\' anytime to see this summary')
+"
+}
+
 do_check() {
   echo "== Build Environment =="; python3 -V || true
   command -v pyinstaller >/dev/null && pyinstaller --version || echo "(pyinstaller not installed)"
@@ -255,5 +265,6 @@ case "${1:-}" in
   changelog)     do_changelog ;;
   version)       do_version ;;
   check)         do_check ;;
-  *) echo "Usage: $0 {build|appimage|clean|demo-config|install-deps|test|lint|format|typecheck|changelog|version|check}"; exit 1 ;;
+  check-tools)   do_check_tools ;;
+  *) echo "Usage: $0 {build|appimage|clean|demo-config|install-deps|test|lint|format|typecheck|changelog|version|check|check-tools}"; exit 1 ;;
 esac
