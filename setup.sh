@@ -15,6 +15,34 @@ ARCH=$(uname -m)
 die()  { echo "ERROR: $*" >&2; exit 2; }
 need() { command -v "$1" >/dev/null 2>&1 || die "Missing required tool: $1"; }
 
+ensure_venv() {
+  if [ ! -d "venv" ]; then
+    echo "[*] Creating virtual environment"
+    python3 -m venv venv
+  fi
+  if [ -z "${VIRTUAL_ENV:-}" ]; then
+    echo "[*] Activating virtual environment"
+    # shellcheck disable=SC1091
+    . venv/bin/activate
+  fi
+}
+
+get_python() {
+  if [ -n "${VIRTUAL_ENV:-}" ] || [ -d "venv" ]; then
+    echo "venv/bin/python"
+  else
+    echo "python3"
+  fi
+}
+
+get_pip() {
+  if [ -n "${VIRTUAL_ENV:-}" ] || [ -d "venv" ]; then
+    echo "venv/bin/pip"
+  else
+    echo "python3 -m pip"
+  fi
+}
+
 check_python311() {
   need python3
   python3 - <<'PY'
@@ -39,7 +67,9 @@ ensure_appimagetool() {
 
 install_dev_deps() {
   echo "[*] Installing development dependencies"
-  python3 -m pip install --user -r requirements.txt
+  ensure_venv
+  PIP=$(get_pip)
+  $PIP install -r requirements.txt
 }
 
 write_demo_toml() {
@@ -149,23 +179,27 @@ do_clean() { rm -rf "${BUILD}" "${DIST}"; echo "[ok] cleaned"; }
 
 do_test() {
   echo "[*] Running tests"
-  python3 -m pytest tests/ -v
+  PYTHON=$(get_python)
+  $PYTHON -m pytest tests/ -v
 }
 
 do_lint() {
   echo "[*] Running linters"
-  python3 -m black --check docrip/ main.py
-  python3 -m flake8 docrip/ main.py
+  PYTHON=$(get_python)
+  $PYTHON -m black --check docrip/ main.py
+  $PYTHON -m flake8 docrip/ main.py
 }
 
 do_format() {
   echo "[*] Formatting code"
-  python3 -m black docrip/ main.py
+  PYTHON=$(get_python)
+  $PYTHON -m black docrip/ main.py
 }
 
 do_typecheck() {
   echo "[*] Running type check"
-  python3 -m mypy docrip/ main.py --ignore-missing-imports
+  PYTHON=$(get_python)
+  $PYTHON -m mypy docrip/ main.py --ignore-missing-imports
 }
 
 do_changelog() {

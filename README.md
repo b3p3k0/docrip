@@ -291,7 +291,7 @@ docrip/
 git clone https://github.com/your-org/docrip.git
 cd docrip
 
-# Install development dependencies
+# Install development dependencies (creates and manages virtual environment automatically)
 ./setup.sh install-deps
 
 # Check environment
@@ -300,6 +300,8 @@ cd docrip
 # Run in development mode
 python3 main.py --help
 ```
+
+**Note**: The setup script automatically creates and manages a Python virtual environment (`venv/`) to ensure compatibility with modern Python distributions that implement PEP 668 (externally-managed environments). All development commands automatically use the virtual environment.
 
 ### Development Commands
 
@@ -336,6 +338,47 @@ python3 -m pytest -m unit
 
 # Run with coverage
 python3 -m pytest --cov=docrip
+```
+
+### Development Troubleshooting
+
+#### Virtual Environment Issues
+
+```bash
+# If virtual environment becomes corrupted, remove and recreate
+rm -rf venv/
+./setup.sh install-deps
+
+# Check if virtual environment is active
+echo $VIRTUAL_ENV
+
+# Manually activate virtual environment if needed
+source venv/bin/activate
+```
+
+#### Python Version Issues
+
+```bash
+# Verify Python 3.11+ is available
+python3 --version
+
+# If using older Python, install Python 3.11+
+sudo apt update
+sudo apt install python3.11 python3.11-venv python3.11-dev
+```
+
+#### Dependency Issues
+
+```bash
+# Clean install all dependencies
+rm -rf venv/
+./setup.sh install-deps
+
+# Check installed packages
+venv/bin/pip list
+
+# Upgrade all dependencies
+venv/bin/pip install --upgrade -r requirements.txt
 ```
 
 ## 🚀 Deployment
