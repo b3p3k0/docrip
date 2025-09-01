@@ -4,10 +4,12 @@ Dataclasses used across modules: Config, Volume, VolumeResult.
 
 These are intentionally lightweight, serializable, and stable for logging.
 """
+
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List, Dict, Any
+
 
 @dataclass
 class Config:
@@ -45,6 +47,7 @@ class Config:
     run_summary_dir: Path
     per_volume_json: bool
 
+
 @dataclass
 class Volume:
     path: str
@@ -58,6 +61,7 @@ class Volume:
     partno: int
     model: Optional[str]
     skip_reason: Optional[str] = None
+
 
 @dataclass
 class VolumeResult:

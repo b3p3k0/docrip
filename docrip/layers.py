@@ -6,29 +6,36 @@ Storage layers handling (read-only intent):
 - Import ZFS pools (RO): zpool import -a -o readonly=on -N -f
 - Helper: pk_disk_of (resolve parent disk of a node)
 """
+
 from __future__ import annotations
 from .util import run, which_or_warn
 
-def assemble_layers(allow_raid: bool, allow_lvm: bool, dry: bool=False) -> None:
+
+def assemble_layers(allow_raid: bool, allow_lvm: bool, dry: bool = False) -> None:
     if allow_raid and which_or_warn("mdadm"):
-        run(["mdadm","--assemble","--scan","--readonly"], dry=dry)
+        run(["mdadm", "--assemble", "--scan", "--readonly"], dry=dry)
     if allow_lvm and which_or_warn("vgchange"):
-        run(["vgchange","-ay"], dry=dry)
+        run(["vgchange", "-ay"], dry=dry)
     if which_or_warn("zpool"):
-        run(["zpool","import","-a","-o","readonly=on","-N","-f"], dry=dry)
+        run(["zpool", "import", "-a", "-o", "readonly=on", "-N", "-f"], dry=dry)
+
 
 def pk_disk_of(dev: str) -> str | None:
     """Walk up PKNAME until reaching a 'disk' node; return /dev/<name>."""
-    seen=set(); cur=dev
+    seen = set()
+    cur = dev
     for _ in range(8):
-        rc,out = run(["lsblk","-no","TYPE,PKNAME",cur], capture=True)
-        if rc!=0: break
-        tokens = (out.split() + ["",""])[:2]
+        rc, out = run(["lsblk", "-no", "TYPE,PKNAME", cur], capture=True)
+        if rc != 0:
+            break
+        tokens = (out.split() + ["", ""])[:2]
         t, pk = tokens[0], tokens[1]
         if t == "disk":
-            rc2,out2 = run(["lsblk","-no","NAME",cur], capture=True)
+            rc2, out2 = run(["lsblk", "-no", "NAME", cur], capture=True)
             name = out2.strip()
             return f"/dev/{name}"
-        if not pk or pk in seen: break
-        seen.add(pk); cur = f"/dev/{pk}"
+        if not pk or pk in seen:
+            break
+        seen.add(pk)
+        cur = f"/dev/{pk}"
     return None

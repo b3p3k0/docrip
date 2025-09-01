@@ -10,14 +10,15 @@ from pathlib import Path
 if __name__ == "__main__":
     # Get the directory containing this script
     script_dir = Path(__file__).resolve().parent
-    
+
     # Add to Python path if not already there
     if str(script_dir) not in sys.path:
         sys.path.insert(0, str(script_dir))
-    
+
     # Import and run the CLI
     try:
         from docrip.cli import main
+
         sys.exit(main())
     except ImportError as e:
         print(f"Error importing docrip modules: {e}")
