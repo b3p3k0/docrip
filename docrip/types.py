@@ -60,6 +60,7 @@ class Volume:
     diskno: int
     partno: int
     model: Optional[str]
+    is_boot_device: bool = False
     skip_reason: Optional[str] = None
 
 

@@ -17,22 +17,30 @@ from .util import run
 from .layers import pk_disk_of
 
 
-def find_boot_devices() -> set[str]:
-    """Identify and exclude the live-USB root device and common mountpoints."""
+def find_live_usb_devices() -> set[str]:
+    """Identify live USB devices to exclude (but not target boot devices)."""
     exclude = set()
-    rc, out = run(["findmnt", "-no", "SOURCE", "/"], capture=True)
-    if rc == 0:
-        src = out.strip()
-        if src.startswith("/dev/"):
-            exclude.add(src)
-            m = re.match(r"^(/dev/[a-z]+)", src)
-            if m:
-                exclude.add(m.group(1))
+    # Only exclude live USB mountpoints, not the target system root
     for mp in ("/cdrom", "/isodevice"):
         rc, out = run(["findmnt", "-no", "SOURCE", mp], capture=True)
         if rc == 0 and out.strip().startswith("/dev/"):
             exclude.add(out.strip())
     return exclude
+
+
+def find_target_boot_devices() -> set[str]:
+    """Identify target system boot devices for labeling (not exclusion)."""
+    boot_devices = set()
+    rc, out = run(["findmnt", "-no", "SOURCE", "/"], capture=True)
+    if rc == 0:
+        src = out.strip()
+        if src.startswith("/dev/"):
+            boot_devices.add(src)
+            # Also add the parent disk
+            m = re.match(r"^(/dev/[a-z]+)", src)
+            if m:
+                boot_devices.add(m.group(1))
+    return boot_devices
 
 
 def lsblk_json() -> Dict[str, Any]:
@@ -92,7 +100,8 @@ def _build_disk_index(blockdevices: List[Dict[str, Any]]) -> Dict[str, int]:
 def collect_volumes(cfg: Config) -> List[Volume]:
     """Return volumes with skip reasons annotated; mounting is handled later."""
     data = lsblk_json()
-    exclude = find_boot_devices()
+    exclude = find_live_usb_devices()  # Only exclude live USB, not target boot
+    boot_devices = find_target_boot_devices()  # For labeling target boot devices
     disks_index = _build_disk_index(data.get("blockdevices", []))
     vols: List[Volume] = []
 
@@ -113,8 +122,9 @@ def collect_volumes(cfg: Config) -> List[Volume]:
             diskno = disks_index.get(parent_disk, 0)
             m = re.search(r"(\d+)$", kname or "")
             partno = int(m.group(1)) if m else 0
+            is_boot = path in boot_devices or (parent_disk and parent_disk in boot_devices)
             vols.append(
-                Volume(path, kname, fstype, size, t, uuid, enc, diskno, partno, model)
+                Volume(path, kname, fstype, size, t, uuid, enc, diskno, partno, model, is_boot)
             )
         for ch in node.get("children") or []:
             walk(ch)
@@ -127,7 +137,7 @@ def collect_volumes(cfg: Config) -> List[Volume]:
     for v in vols:
         reason = None
         if v.path in exclude or Path(v.path).name in cfg.avoid_devices:
-            reason = "boot/avoid"
+            reason = "live_usb/avoid"  # Only live USB, not target boot devices
         elif v.fstype in cfg.skip_fstypes:
             reason = f"skip_fstype:{v.fstype}"
         elif cfg.include_fstypes and (v.fstype not in cfg.include_fstypes):
@@ -147,7 +157,13 @@ def print_plan(vols: List[Volume]) -> None:
     )
     for v in sorted(vols, key=lambda x: (x.diskno, x.partno, x.path)):
         gb = v.size_bytes / (1024**3)
-        status = v.skip_reason or "process"
+        # Show boot_device status for target boot devices that will be processed
+        if v.skip_reason:
+            status = v.skip_reason
+        elif v.is_boot_device:
+            status = "boot_device"
+        else:
+            status = "process"
         print(
             f"{v.path:<20} {v.fstype or '-':<8} {gb:>9.1f} {v.diskno:>4} {v.partno:>4} {status:<20}"
         )
